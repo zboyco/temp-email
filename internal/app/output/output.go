@@ -2,6 +2,7 @@ package output
 
 import (
 	"fmt"
+	"html"
 	"io"
 	"regexp"
 	"strings"
@@ -24,18 +25,25 @@ const (
 	borderRightT      = '┤'
 )
 
+// HTMLConvertOptions HTML转换选项
+type HTMLConvertOptions struct {
+	ShowLinkURLs   bool   // 是否显示链接URL
+	UseListBullets bool   // 是否使用列表项目符号
+	TableSeparator string // 表格单元格分隔符
+}
+
 type Printer interface {
-	PrintSummary(address string)
+	PrintSummary(addresses []string)
 	PrintEmail(email guerrilla.Email)
 }
 
 type printer struct {
-	w     io.Writer
-	width int
+	w           io.Writer
+	width       int
+	htmlOptions HTMLConvertOptions
 }
 
 func New(w io.Writer) Printer {
-
 	width, _, err := term.GetSize(0)
 	if err != nil {
 		width = 80
@@ -44,6 +52,11 @@ func New(w io.Writer) Printer {
 	return &printer{
 		w:     w,
 		width: width,
+		htmlOptions: HTMLConvertOptions{
+			ShowLinkURLs:   true,
+			UseListBullets: true,
+			TableSeparator: "\t",
+		},
 	}
 }
 
@@ -90,7 +103,6 @@ func safeRepeat(input string, repeat int) string {
 }
 
 func (p *printer) printIn(indent int, strip bool, format string, args ...interface{}) {
-
 	var lines []string
 	if strip {
 		lines = p.limitSizeWithStrip(fmt.Sprintf(format, args...), p.width-indent-4)
@@ -227,17 +239,150 @@ func (p *printer) printFooter() {
 	p.printf("<dim>%c%s%c</dim>\n", borderBottomLeft, safeRepeat(string(borderHorizontal), p.width-2), borderBottomRight)
 }
 
-var rgxHtml = regexp.MustCompile(`<[^>]+>`)
+var (
+	rgxHtml        = regexp.MustCompile(`<[^>]+>`)
+	rgxHtmlContent = regexp.MustCompile(`<\s*(?:html|body|div|p|br|a|table|tr|td|th|ul|ol|li|h[1-6]|img|input)\b[^>]*>`)
+
+	// HTML转换用的预编译正则表达式
+	rgxBr            = regexp.MustCompile(`<br\s*/?>`)
+	rgxP             = regexp.MustCompile(`</?p[^>]*>`)
+	rgxDiv           = regexp.MustCompile(`</?div[^>]*>`)
+	rgxHeading       = regexp.MustCompile(`</?h[1-6][^>]*>`)
+	rgxTable         = regexp.MustCompile(`</?table[^>]*>`)
+	rgxTr            = regexp.MustCompile(`</?tr[^>]*>`)
+	rgxTd            = regexp.MustCompile(`</?t[dh][^>]*>`)
+	rgxUl            = regexp.MustCompile(`</?ul[^>]*>`)
+	rgxOl            = regexp.MustCompile(`</?ol[^>]*>`)
+	rgxLi            = regexp.MustCompile(`<li[^>]*>`)
+	rgxLiEnd         = regexp.MustCompile(`</li>`)
+	rgxLink          = regexp.MustCompile(`<a[^>]*href=["']([^"']*)["'][^>]*>([^<]*)</a>`)
+	rgxAllTags       = regexp.MustCompile(`<[^>]+>`)
+	rgxMultiNewlines = regexp.MustCompile(`\n\s*\n`)
+)
 
 func stripTags(input string) string {
 	return rgxHtml.ReplaceAllString(input, "")
 }
 
-func (p *printer) PrintSummary(address string) {
+// isHTMLContent 检测内容是否包含HTML标签
+func isHTMLContent(content string) bool {
+	// 检测常见HTML标签
+	if rgxHtmlContent.MatchString(content) {
+		return true
+	}
+
+	// 检测HTML实体，如果包含多个HTML实体也认为是HTML内容
+	entityCount := strings.Count(content, "&") + strings.Count(content, "&#")
+	if entityCount >= 3 {
+		return true
+	}
+
+	// 检测HTML文档声明
+	if strings.Contains(strings.ToLower(content), "<!doctype html>") ||
+		strings.Contains(strings.ToLower(content), "<html") {
+		return true
+	}
+
+	return false
+}
+
+// processHTMLStructure 处理HTML结构标签
+func processHTMLStructure(text string) string {
+	// 处理换行标签
+	text = rgxBr.ReplaceAllString(text, "\n")
+
+	// 处理段落和div标签
+	text = rgxP.ReplaceAllString(text, "\n")
+	text = rgxDiv.ReplaceAllString(text, "\n")
+
+	// 处理标题标签
+	text = rgxHeading.ReplaceAllString(text, "\n")
+
+	return text
+}
+
+// processHTMLTables 处理HTML表格
+func processHTMLTables(text string, options HTMLConvertOptions) string {
+	// 表格开始和结束添加换行
+	text = rgxTable.ReplaceAllString(text, "\n")
+
+	// 表格行添加换行
+	text = rgxTr.ReplaceAllString(text, "\n")
+
+	// 表格单元格用配置的分隔符分隔
+	text = rgxTd.ReplaceAllString(text, options.TableSeparator)
+
+	return text
+}
+
+// processHTMLLists 处理HTML列表
+func processHTMLLists(text string, options HTMLConvertOptions) string {
+	// 列表开始和结束添加换行
+	text = rgxUl.ReplaceAllString(text, "\n")
+	text = rgxOl.ReplaceAllString(text, "\n")
+
+	// 根据配置决定是否使用项目符号
+	if options.UseListBullets {
+		text = rgxLi.ReplaceAllString(text, "\n• ")
+	} else {
+		text = rgxLi.ReplaceAllString(text, "\n")
+	}
+	text = rgxLiEnd.ReplaceAllString(text, "")
+
+	return text
+}
+
+// processHTMLLinks 处理HTML链接
+func processHTMLLinks(text string, options HTMLConvertOptions) string {
+	if options.ShowLinkURLs {
+		// 保留链接文本和URL
+		return rgxLink.ReplaceAllString(text, "$2 ($1)")
+	} else {
+		// 只保留链接文本
+		return rgxLink.ReplaceAllString(text, "$2")
+	}
+}
+
+// cleanupText 清理文本格式
+func cleanupText(text string) string {
+	// 移除所有剩余的HTML标签
+	text = rgxAllTags.ReplaceAllString(text, "")
+
+	// 使用html包解码HTML实体
+	text = html.UnescapeString(text)
+
+	// 清理多余的空行
+	text = rgxMultiNewlines.ReplaceAllString(text, "\n\n")
+	text = strings.TrimSpace(text)
+
+	return text
+}
+
+// convertHTMLToText 将HTML内容转换为格式化的纯文本
+func convertHTMLToText(htmlContent string, options HTMLConvertOptions) (string, error) {
+	text := htmlContent
+
+	// 按顺序处理不同类型的HTML元素
+	text = processHTMLStructure(text)
+	text = processHTMLTables(text, options)
+	text = processHTMLLists(text, options)
+	text = processHTMLLinks(text, options)
+	text = cleanupText(text)
+
+	return text, nil
+}
+
+func (p *printer) PrintSummary(addresses []string) {
 	p.printHeader("New Address Created")
-	p.printIn(0, true, "Your disposable email address is:")
+	p.printIn(0, true, "Your disposable email addresses are:")
 	p.printIn(0, true, "")
-	p.printIn(4, true, "<blue>%s</blue>", address)
+
+	for _, addr := range addresses {
+		if strings.TrimSpace(addr) != "" {
+			p.printIn(4, true, "<blue>%s</blue>", strings.TrimSpace(addr))
+		}
+	}
+
 	p.printIn(0, true, "")
 	p.printIn(0, true, "Emails will appear below as they are received.")
 	p.printFooter()
@@ -249,6 +394,16 @@ func (p *printer) PrintEmail(email guerrilla.Email) {
 	p.printIn(0, true, "From:      <blue>%s", email.From)
 	p.printIn(0, true, "Time:      <blue>%s", email.Timestamp.Format(time.RFC1123))
 	p.printDivider("Body")
-	p.printIn(0, false, "%s", email.Body)
+
+	// 智能HTML检测和转换
+	bodyContent := email.Body
+	if isHTMLContent(bodyContent) {
+		if convertedText, err := convertHTMLToText(bodyContent, p.htmlOptions); err == nil {
+			bodyContent = convertedText
+		}
+		// 如果转换失败，使用原始内容（错误回退机制）
+	}
+
+	p.printIn(0, false, "%s", bodyContent)
 	p.printFooter()
 }
