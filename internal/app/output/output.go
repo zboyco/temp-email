@@ -392,7 +392,7 @@ func (p *printer) PrintEmail(email guerrilla.Email) {
 	p.printHeader("Email #" + email.ID)
 	p.printIn(0, true, "Subject:   <blue>%s", email.Subject)
 	p.printIn(0, true, "From:      <blue>%s", email.From)
-	p.printIn(0, true, "Time:      <blue>%s", email.Timestamp.Format(time.RFC1123))
+	p.printIn(0, true, "Time:      <blue>%s", email.Timestamp.Format(time.DateTime))
 	p.printDivider("Body")
 
 	// 智能HTML检测和转换

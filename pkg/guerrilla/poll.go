@@ -96,10 +96,12 @@ func (p *poller) Close() {
 }
 
 func (p *poller) setError(err error) {
-	defer p.Close()
 	p.Lock()
-	defer p.Unlock()
 	p.err = err
+	p.Unlock()
+
+	// 异步关闭以避免死锁
+	go p.Close()
 }
 
 func (p *poller) Error() error {
